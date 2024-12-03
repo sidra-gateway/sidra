@@ -1,38 +1,49 @@
-# Stage 1: Build semua plugin
-FROM golang:1.23 AS builder
+# Stage 1: Build semua plugin dan konfigurasi
+FROM golang:1.23-alpine AS builder
+
 WORKDIR /app
 
-# Copy dan build semua plugin secara terpisah
-COPY ./plugins /app/plugins
+# Salin kode sumber untuk semua plugin dan konfigurasi
+COPY plugins/plugin-basic-auth ./plugins/plugin-basic-auth
+COPY plugins/plugin-jwt ./plugins/plugin-jwt
+COPY plugins/plugin-whitelist ./plugins/plugin-whitelist
+COPY plugins/plugin-cache ./plugins/plugin-cache
+COPY plugins/plugin-ratelimit ./plugins/plugin-ratelimit
+COPY sidra-config ./sidra-config
+COPY sidra-plugins-hub ./sidra-plugins-hub
 
-# Build setiap plugin dan letakkan di /tmp
-RUN cd /app/plugins/plugin-jwt && go mod tidy && go build -o /tmp/plugin-jwt && \
-    cd /app/plugins/plugin-basic-auth && go mod tidy && go build -o /tmp/plugin-basic-auth && \
-    cd /app/plugins/plugin-cache && go mod tidy && go build -o /tmp/plugin-cache && \
-    cd /app/plugins/plugin-whitelist && go mod tidy && go build -o /tmp/plugin-whitelist && \
-    cd /app/plugins/plugin-ratelimit && go mod tidy && go build -o /tmp/plugin-ratelimit
+# Build semua plugin
+RUN for dir in ./plugins/*; do \
+    if [ -d "$dir" ]; then \
+        echo "Building $(basename $dir)..."; \
+        cd $dir && go mod tidy && go build -o /app/build/$(basename $dir); \
+        cd -; \
+    fi; \
+done
 
-# Stage 2: Final image
+RUN cd sidra-config && go mod tidy && go build -o /app/sidra-config;
+
+
+# Stage 2: Menjalankan container dengan nginx dan plugin
 FROM nginx:latest
 
-# Copy semua plugin ke container
-COPY --from=builder /tmp/plugin-jwt /usr/local/bin/plugin-jwt
-COPY --from=builder /tmp/plugin-basic-auth /usr/local/bin/plugin-basic-auth
-COPY --from=builder /tmp/plugin-cache /usr/local/bin/plugin-cache
-COPY --from=builder /tmp/plugin-whitelist /usr/local/bin/plugin-whitelist
-COPY --from=builder /tmp/plugin-ratelimit /usr/local/bin/plugin-ratelimit
+WORKDIR /app
 
-# Copy services (sidra-config dan sidra-plugins-hub)
-COPY ./sidra-config /usr/local/bin/sidra-config
-COPY ./sidra-plugins-hub /usr/local/bin/sidra-plugins-hub
+# Salin hasil build dan konfigurasi ke dalam container
+COPY --from=builder /app/build /app/plugins
+COPY --from=builder /app/sidra-config /app/sidra-config
+COPY --from=builder /app/sidra-plugins-hub /app/sidra-plugins-hub
+COPY --from=builder /app/sidra-config /app/sidra-config
 
-# Set permissions
-RUN chmod +x /usr/local/bin/plugin-* \
-              /usr/local/bin/sidra-config \
-              /usr/local/bin/sidra-plugins-hub
+# Salin konfigurasi nginx
+COPY config/nginx.conf /etc/nginx/conf.d/sidra.conf
+COPY sidra-plugins-hub /app/sidra-plugins-hub
 
-# Expose necessary ports
-EXPOSE 8080
+# Menyediakan akses ke port 8080
+EXPOSE 8080 3033
 
-# Set default command
-CMD ["nginx", "-g", "daemon off;"]
+# Salin skrip run.sh
+COPY run.sh /app/run.sh
+
+# Set default command untuk menjalankan aplikasi
+CMD ["bash", "/app/run.sh"]
